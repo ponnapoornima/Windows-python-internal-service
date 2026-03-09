@@ -1,0 +1,18 @@
+# Python runtime dependencies
+# Install with: pip install -r requirements.txt
+
+# HTTP client
+requests==2.32.3
+
+# SQL Server connectivity (ODBC Driver 17 for SQL Server required)
+pyodbc==5.1.0
+
+# Configuration via .env files
+pydantic-settings==2.7.1
+pydantic==2.10.6
+
+# No external auth library needed — APIM subscription key is a simple HTTP header
+
+# ---- Dev / Test dependencies ----
+pytest==8.3.4
+pytest-mock==3.14.0
