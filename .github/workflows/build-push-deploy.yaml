@@ -1,0 +1,56 @@
+name: Build and Deploy Container App
+
+on:
+  push:
+    branches:
+      - developer
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      ACR_NAME: cpimageregistry1
+      RESOURCE_GROUP: CleavelandPrice-RG-Dev
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install latest Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Set environment variables (DEV only)
+      - name: Set environment variables
+        run: |
+          echo "IMAGE_REPO=python-internal-service" >> $GITHUB_ENV
+          echo "ENV_FILE=.env.dev" >> $GITHUB_ENV
+          echo "CONTAINER_APP=python-internal-service" >> $GITHUB_ENV
+          echo "RESOURCE_GROUP=CleavelandPrice-RG-Dev" >> $GITHUB_ENV
+
+      - name: Login to ACR
+        run: |
+          az acr login --name $ACR_NAME
+
+      - name: Build Docker Image
+        run: |
+          docker build \
+            --no-cache \
+            --build-arg ENV_FILE=${ENV_FILE} \
+            -t $ACR_NAME.azurecr.io/${IMAGE_REPO}:latest .
+
+      - name: Push Docker Image
+        run: |
+          docker push $ACR_NAME.azurecr.io/${IMAGE_REPO}:latest
