@@ -1,6 +1,6 @@
 # DCR Queue Polling Service
 
-A Python background service that polls the **DrawingChangeCompareQueue** table in SQL Server and orchestrates DCR (Drawing Change Request) comparison jobs via an external API.
+A Python background service that polls the **DrawingChangeCompareQueue** table in SQL Server and orchestrates DCR (Drawing Change Request) comparison jobs via an external API(Automated DCR-System).
 
 ## Architecture
 
@@ -9,19 +9,17 @@ SQL Server — DrawingChangeCompareQueue
   Status = 'Queued'
          │
          ▼
-  This Service (poller)
+  Internal-python-service(poller)
    Phase 1: Upload
     1. Claims record (Status → 'Processing')
     2. Reads old + new PDFs from PDF_SOURCE_DIR
     3. Uploads to external service  → POST /api/v1/dcrs/upload
 
    Phase 2: Status Check
-    4. Polls external service       → GET /api/v1/dcrs/{queueId}/status
-    5. If 'Completed' → downloads ResultPDFLink to network drive
-    6. Marks record (Status → 'Pending Review', CompareResult → 'Successful')
-         │
-         ▼
-  Result PDF saved to RESULT_PDF_SAVE_PATH
+    4. Polls external service ( Automated DCR-System)     → GET /api/v1/dcrs/{queueId}/status
+    
+    5. Marks record (Status → 'Pending Review', CompareResult → 'Successful')
+      
 ```
 
 ## Pre-requisites
@@ -47,32 +45,11 @@ venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 
 # 4. Configure environment
-copy .env.example .env
+copy  .env
 # Edit .env with your actual values
 
 # 5. Run
 python main.py
-```
-
-## Configuration (`.env`)
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `SQL_SERVER_HOST` | ✅ | — | SQL Server hostname or IP |
-| `SQL_SERVER_DATABASE` | ✅ | `DrawingHub` | Database name |
-| `SQL_SERVER_USERNAME` | ✅ | — | DB login username |
-| `SQL_SERVER_PASSWORD` | ✅ | — | DB login password |
-| `EXTERNAL_API_BASE_URL` | ✅ | — | External comparison service URL |
-| `PDF_SOURCE_DIR` | ✅ | — | Path to source PDFs |
-| `RESULT_PDF_SAVE_PATH` | ✅ | — | Path to save result PDFs |
-| `POLL_INTERVAL_SECONDS` | — | `5` | Seconds between polls |
-| `MAX_CONCURRENT_JOBS` | — | `3` | Max parallel worker threads |
-| `APIM_SUBSCRIPTION_KEY` | — | — | APIM subscription key (required for APIM) |
-
-## Running Tests
-
-```bash
-python -m pytest tests/ -v
 ```
 
 ## Docker
