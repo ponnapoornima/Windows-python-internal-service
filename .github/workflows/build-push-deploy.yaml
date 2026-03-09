@@ -32,7 +32,6 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Set environment variables (DEV only)
       - name: Set environment variables
         run: |
           echo "IMAGE_REPO=python-internal-service" >> $GITHUB_ENV
@@ -54,3 +53,11 @@ jobs:
       - name: Push Docker Image
         run: |
           docker push $ACR_NAME.azurecr.io/${IMAGE_REPO}:latest
+
+      - name: Deploy to Azure Container App
+        run: |
+          az containerapp update \
+            --name $CONTAINER_APP \
+            --resource-group $RESOURCE_GROUP \
+            --image $ACR_NAME.azurecr.io/${IMAGE_REPO}:latest \
+            --set-env-vars REDEPLOY=$(date +%s)
