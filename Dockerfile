@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /service
 
-# Install dependencies + Microsoft ODBC Driver..
+# Install dependencies + Microsoft ODBC Driver
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
