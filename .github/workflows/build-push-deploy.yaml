@@ -1,9 +1,9 @@
-name: Deploy and Verify Python Internal Polling Service to VM
+name: Deploy and Verify Python Internal Polling Service on VM with Docker
 
 on:
   push:
     branches:
-      - developer
+      - test
   workflow_dispatch:
 
 jobs:
@@ -11,10 +11,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout code
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      - name: Deploy Python Polling Service on VM
+      # Step 2: SSH into VM and deploy Docker container
+      - name: Deploy Dockerized Python Service on VM
         uses: appleboy/ssh-action@v0.1.6
         with:
           host: ${{ secrets.VM_HOST }}
@@ -24,96 +26,46 @@ jobs:
           script: |
             VM_USER="${{ secrets.VM_USER }}"
             APP_DIR="/home/$VM_USER/python-internal-service"
-            SERVICE_FILE="/etc/systemd/system/python-polling.service"
 
+            # Clone repo if not exists
             cd /home/$VM_USER
-
             if [ ! -d "python-internal-service" ]; then
               git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git python-internal-service
             fi
 
             cd python-internal-service
-
             git fetch --all
             git reset --hard origin/developer
 
-            sudo apt update
-            sudo apt install -y python3 python3-venv python3-pip git curl
-
-            echo "Installing ODBC drivers..."
-            sudo apt install -y unixodbc unixodbc-dev
-            curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-            sudo curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list -o /etc/apt/sources.list.d/mssql-release.list
-            sudo apt update
-            sudo ACCEPT_EULA=Y apt install -y msodbcsql18
-
-            if [ ! -d "venv" ]; then
-              python3 -m venv venv
+            # Install Docker if not installed
+            if ! command -v docker &> /dev/null; then
+              sudo apt update
+              sudo apt install -y docker.io
             fi
 
-            source venv/bin/activate
+            # Build Docker image
+            sudo docker build -t python-internal-service:latest .
 
-            pip install --upgrade pip
-            pip install -r requirements.txt
-
-            mkdir -p logs
-
-            echo "Creating .env file..."
-            printf "%s\n" \
-            "MSSQL_HOST=${{ secrets.MSSQL_HOST }}" \
-            "MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}" \
-            "MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}" \
-            "MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}" \
-            "EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}" \
-            "POLL_INTERVAL_SECONDS=5" \
-            "MAX_CONCURRENT_JOBS=3" \
-            "REQUEST_TIMEOUT_SECONDS=120" \
-            "MAX_RETRIES=3" \
-            "RETRY_DELAY_SECONDS=5.0" \
-            "APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}" \
-            "LOG_LEVEL=INFO" \
-            "LOG_FILE=logs/service.log" \
-            > .env
-
-            chmod 600 .env
-
-            echo "Creating systemd service..."
-            sudo printf "%s\n" \
-            "[Unit]" \
-            "Description=Python Internal Polling Service" \
-            "After=network.target" \
-            "" \
-            "[Service]" \
-            "User=$VM_USER" \
-            "WorkingDirectory=$APP_DIR" \
-            "ExecStart=$APP_DIR/venv/bin/python main.py" \
-            "Restart=always" \
-            "RestartSec=5" \
-            "Environment=PYTHONUNBUFFERED=1" \
-            "" \
-            "[Install]" \
-            "WantedBy=multi-user.target" \
-            | sudo tee $SERVICE_FILE > /dev/null
-
-            sudo systemctl daemon-reload
-            sudo systemctl enable python-polling.service
-
-            sudo chown -R $VM_USER:$VM_USER $APP_DIR
-
-            echo "Restarting service..."
-            sudo systemctl restart python-polling.service || true
-
-            sleep 5
-
-            if systemctl is-active --quiet python-polling.service; then
-              echo "Service is running"
-            else
-              echo "Service failed"
-              sudo journalctl -u python-polling.service -n 50 --no-pager
-              exit 1
+            # Stop existing container if running
+            if sudo docker ps -q --filter "name=python-internal-service" | grep -q .; then
+              sudo docker stop python-internal-service
+              sudo docker rm python-internal-service
             fi
 
-      - name: Verify Python Polling Service
+            # Run container with environment variables
+            sudo docker run -d --name python-internal-service \
+              -e MSSQL_HOST=${{ secrets.MSSQL_HOST }} \
+              -e MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }} \
+              -e MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }} \
+              -e MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }} \
+              -e EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }} \
+              -e APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }} \
+              python-internal-service:latest
+
+            echo "Docker container deployed successfully"
+
+      # Step 3: Verify container is running
+      - name: Verify Docker Container
         uses: appleboy/ssh-action@v0.1.6
         with:
           host: ${{ secrets.VM_HOST }}
@@ -121,32 +73,20 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            SERVICE_NAME="python-polling.service"
-
+            CONTAINER_NAME="python-internal-service"
             echo "======================================"
-            echo "Checking if service is running..."
+            echo "Checking if Docker container is running..."
             echo "======================================"
 
-            if systemctl is-active --quiet $SERVICE_NAME; then
-              echo "Service is RUNNING"
+            if sudo docker ps --filter "name=$CONTAINER_NAME" --filter "status=running" -q | grep -q .; then
+              echo "Container is RUNNING"
             else
-              echo "Service is NOT running"
+              echo "Container is NOT running"
               exit 1
             fi
 
             echo ""
+            echo "Last 30 logs of container:"
             echo "======================================"
-            echo "Service Status"
-            echo "======================================"
-            sudo systemctl status $SERVICE_NAME --no-pager
-
-            echo ""
-            echo "======================================"
-            echo "Last 30 Logs"
-            echo "======================================"
-            sudo journalctl -u $SERVICE_NAME -n 30 --no-pager
-
-            echo ""
-            echo "======================================"
-            echo "Verification Completed"
+            sudo docker logs --tail 30 $CONTAINER_NAME
             echo "======================================"
