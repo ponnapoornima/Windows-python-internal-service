@@ -1,63 +1,83 @@
-name: Build and Deploy Container App..
+name: Deploy Python Internal Polling Service to VM
 
 on:
   push:
     branches:
       - developer
 
-permissions:
-  id-token: write
-  contents: read
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
-    env:
-      ACR_NAME: cpimageregistry1
-      RESOURCE_GROUP: CleavelandPrice-RG-Dev
-
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
-      - name: Install latest Azure CLI
-        run: |
-          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-
-      - name: Azure Login
-        uses: azure/login@v1
+      - name: Deploy and Start Polling Service on VM
+        uses: appleboy/ssh-action@v0.1.6
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            VM_USER="${{ secrets.VM_USER }}"
+            APP_DIR="/home/$VM_USER/Internal-Python-Service"
+            SERVICE_FILE="/etc/systemd/system/python-polling.service"
 
-      - name: Set environment variables
-        run: |
-          echo "IMAGE_REPO=python-internal-service" >> $GITHUB_ENV
-          echo "ENV_FILE=.env.dev" >> $GITHUB_ENV
-          echo "CONTAINER_APP=python-internal-service" >> $GITHUB_ENV
-          echo "RESOURCE_GROUP=CleavelandPrice-RG-Dev" >> $GITHUB_ENV
+            cd /home/$VM_USER
 
-      - name: Login to ACR
-        run: |
-          az acr login --name $ACR_NAME
+            # Clone repo if missing
+            if [ ! -d "Internal-Python-Service" ]; then
+              git clone https://github.com/CleavelandPrice-3KT/Internal-Python-Service.git
+            fi
 
-      - name: Build Docker Image
-        run: |
-          docker build \
-            --no-cache \
-            --build-arg ENV_FILE=${ENV_FILE} \
-            -t $ACR_NAME.azurecr.io/${IMAGE_REPO}:latest .
+            cd Internal-Python-Service
 
-      - name: Push Docker Image
-        run: |
-          docker push $ACR_NAME.azurecr.io/${IMAGE_REPO}:latest
+            # Reset to latest developer branch
+            git fetch --all
+            git reset --hard origin/developer
 
-      - name: Deploy to Azure Container App
-        run: |
-          az containerapp update \
-            --name $CONTAINER_APP \
-            --resource-group $RESOURCE_GROUP \
-            --image $ACR_NAME.azurecr.io/${IMAGE_REPO}:latest \
-            --set-env-vars REDEPLOY=$(date +%s)
+            # Install dependencies
+            sudo apt update
+            sudo apt install -y python3 python3-venv python3-pip git
+
+            # Create virtual environment if missing
+            if [ ! -d "venv" ]; then
+              python3 -m venv venv
+            fi
+
+            # Activate venv and install Python packages
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+
+            # Create or update systemd service line by line
+            echo "[Unit]" | sudo tee $SERVICE_FILE
+            echo "Description=Python Internal Polling Service" | sudo tee -a $SERVICE_FILE
+            echo "After=network.target" | sudo tee -a $SERVICE_FILE
+            echo "" | sudo tee -a $SERVICE_FILE
+            echo "[Service]" | sudo tee -a $SERVICE_FILE
+            echo "User=$VM_USER" | sudo tee -a $SERVICE_FILE
+            echo "WorkingDirectory=$APP_DIR" | sudo tee -a $SERVICE_FILE
+            echo "ExecStart=$APP_DIR/venv/bin/python main.py" | sudo tee -a $SERVICE_FILE
+            echo "Restart=always" | sudo tee -a $SERVICE_FILE
+            echo "RestartSec=5" | sudo tee -a $SERVICE_FILE
+            echo "" | sudo tee -a $SERVICE_FILE
+            echo "[Install]" | sudo tee -a $SERVICE_FILE
+            echo "WantedBy=multi-user.target" | sudo tee -a $SERVICE_FILE
+
+            # Reload systemd and restart service
+            sudo systemctl daemon-reload
+            sudo systemctl enable python-polling.service
+            sudo systemctl restart python-polling.service
+
+            # Show status
+            sudo systemctl status python-polling.service --no-pager
+
+            # Tail last 50 lines of logs
+            echo "Last 50 lines of polling service logs:"
+            sudo journalctl -u python-polling.service -n 50 --no-pager
