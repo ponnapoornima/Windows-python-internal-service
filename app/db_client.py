@@ -3,9 +3,9 @@ SQL Server database client for the DCR Queue Polling Service.
 
 Provides:
  - Connection management via pyodbc (ODBC Driver 17 for SQL Server)
- - Queue polling (SELECT WHERE Status = 'Queued' / 'Processing')
+ - Atomic queue claim via UPDATE ... OUTPUT (claim_queued_records)
  - Status transitions:
-     Queued     → Processing       (mark_processing)
+     Queued     → Processing       (claim_queued_records — atomic, no mark_processing)
      Processing → Pending Review   (mark_pending_review)
      Any        → Failed           (mark_failed)
 
@@ -94,8 +94,9 @@ _SELECT_COLS = "QueueId, DcrRecordNumber, DcrNumber, Status, CurrentRevisionPdf,
 
 def fetch_queued_records(limit: int = 10) -> List[QueueRecord]:
     """
-    Fetch up to *limit* records with Status = 'Queued', ordered FIFO.
+    Read-only peek at up to *limit* Queued records (used for startup probe only).
 
+    Does NOT claim the records — use claim_queued_records() for actual processing.
     Returns an empty list on error or when no rows match.
     """
     sql = f"""
@@ -105,7 +106,60 @@ def fetch_queued_records(limit: int = 10) -> List[QueueRecord]:
         WHERE Status = 'Queued'
         ORDER BY QueueId ASC
     """
-    return _fetch_records(sql, limit, label="queued")
+    records: List[QueueRecord] = []
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (limit,))
+            rows = cursor.fetchall()
+            records = [QueueRecord.from_row(row) for row in rows]
+        logger.debug(f"Peeked {len(records)} queued record(s) (read-only)")
+    except Exception as exc:
+        logger.error(f"Error peeking at queued records: {exc}")
+    return records
+
+
+def claim_queued_records(limit: int) -> List[QueueRecord]:
+    """
+    Atomically claim up to *limit* Queued records → Processing in a single
+    round-trip using UPDATE ... OUTPUT.
+
+    This eliminates the SELECT + separate UPDATE race window that causes
+    "already claimed" warnings in concurrent deployments.  Every row
+    returned is exclusively owned by this call — no other worker or VM
+    can claim the same row, because SQL Server applies the row lock during
+    the UPDATE itself before any other reader can see the rows.
+
+    Returns the newly-claimed records (with PDF bytes) ready for processing.
+    Returns an empty list on error or when no Queued rows exist.
+    """
+    sql = f"""
+        UPDATE TOP (?) DrawingChangeCompareQueue
+        SET Status = 'Processing'
+        OUTPUT
+            INSERTED.QueueId,
+            INSERTED.DcrRecordNumber,
+            INSERTED.DcrNumber,
+            INSERTED.Status,
+            INSERTED.CurrentRevisionPdf,
+            INSERTED.NewRevisionPdf
+        WHERE Status = 'Queued'
+    """
+    records: List[QueueRecord] = []
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (limit,))
+            rows = cursor.fetchall()
+            records = [QueueRecord.from_row(row) for row in rows]
+        if records:
+            ids = [r.queue_id for r in records]
+            logger.info(f"Atomically claimed {len(records)} record(s): QueueIds={ids}")
+        else:
+            logger.debug("No Queued records available to claim")
+    except Exception as exc:
+        logger.error(f"Error claiming queued records: {exc}")
+    return records
 
 
 def fetch_processing_records(limit: int = 50) -> List[QueueRecord]:
@@ -121,11 +175,6 @@ def fetch_processing_records(limit: int = 50) -> List[QueueRecord]:
         WHERE Status = 'Processing'
         ORDER BY QueueId ASC
     """
-    return _fetch_records(sql, limit, label="processing")
-
-
-def _fetch_records(sql: str, limit: int, label: str) -> List[QueueRecord]:
-    """Internal helper — runs a parameterised SELECT and maps rows to QueueRecord."""
     records: List[QueueRecord] = []
     try:
         with get_connection() as conn:
@@ -133,9 +182,9 @@ def _fetch_records(sql: str, limit: int, label: str) -> List[QueueRecord]:
             cursor.execute(sql, (limit,))
             rows = cursor.fetchall()
             records = [QueueRecord.from_row(row) for row in rows]
-        logger.debug(f"Fetched {len(records)} {label} record(s)")
+        logger.debug(f"Fetched {len(records)} processing record(s)")
     except Exception as exc:
-        logger.error(f"Error fetching {label} records: {exc}")
+        logger.error(f"Error fetching processing records: {exc}")
     return records
 
 
@@ -143,33 +192,9 @@ def _fetch_records(sql: str, limit: int, label: str) -> List[QueueRecord]:
 # Queue write operations
 # ---------------------------------------------------------------------------
 
-def mark_processing(queue_id: int) -> bool:
-    """
-    Atomically transition Status from 'Queued' → 'Processing'.
-
-    Uses an optimistic lock (WHERE Status = 'Queued') to prevent
-    double-processing in concurrent deployments.
-
-    Returns True if the row was successfully claimed, False otherwise.
-    """
-    sql = """
-        UPDATE DrawingChangeCompareQueue
-        SET Status = 'Processing'
-        WHERE QueueId = ? AND Status = 'Queued'
-    """
-    try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (queue_id,))
-            claimed = cursor.rowcount > 0
-        if claimed:
-            logger.info(f"QueueId={queue_id} → Status='Processing'")
-        else:
-            logger.warning(f"QueueId={queue_id} already claimed or no longer Queued")
-        return claimed
-    except Exception as exc:
-        logger.error(f"Error claiming QueueId={queue_id}: {exc}")
-        return False
+# mark_processing() removed — superseded by claim_queued_records().
+# Claiming is now done atomically via UPDATE ... OUTPUT in a single
+# round-trip, which eliminates the SELECT + UPDATE race window.
 
 
 def mark_pending_review(queue_id: int) -> None:
