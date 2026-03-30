@@ -105,26 +105,32 @@ class Poller:
     # -------------------------------------------------------------------------
 
     def _poll_queued(self) -> None:
-        """Fetch 'Queued' records and submit upload jobs for unclaimed ones."""
+        """
+        Atomically claim 'Queued' records and submit upload jobs.
+
+        Uses a single UPDATE ... OUTPUT statement so claim + read happen in
+        one round-trip.  No race window exists between SELECT and UPDATE,
+        meaning no worker (local or VM) can ever see the same row twice.
+        """
         available_slots = settings.MAX_CONCURRENT_JOBS - len(self._upload_jobs)
         if available_slots <= 0:
             logger.debug("All upload slots occupied — skipping queued poll")
             return
 
-        records = db_client.fetch_queued_records(limit=available_slots)
+        # Single atomic round-trip: claim ownership AND read PDF bytes together.
+        # Only rows that were still 'Queued' at lock-acquisition time are returned.
+        records = db_client.claim_queued_records(limit=available_slots)
         if not records:
             logger.debug("No queued records found")
             return
 
-        logger.info(f"Found {len(records)} queued record(s)")
-
         for record in records:
             if record.queue_id in self._upload_jobs:
-                continue  # Already submitted
-
-            # Optimistic lock: atomically claim the record
-            if not db_client.mark_processing(record.queue_id):
-                continue  # Another worker already claimed it
+                # Should never happen with atomic claim, but guard defensively.
+                logger.warning(
+                    f"[QueueId={record.queue_id}] Already in upload_jobs after atomic claim — skipping"
+                )
+                continue
 
             future = self._executor.submit(self._run_upload, record)
             self._upload_jobs[record.queue_id] = future
