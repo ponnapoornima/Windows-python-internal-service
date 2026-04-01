@@ -1,4 +1,4 @@
-name: Deploy Python Polling Service (Windows VM)
+name: Deploy Python Polling Service to Windows VM
 
 on:
   push:
@@ -11,28 +11,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout (optional, keeps workflow consistent)
+      # Step 1: Checkout workflow repo (optional)
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      # Step 2: Deploy to Windows VM
+      # Step 2: Deploy on Windows VM
       - name: Deploy Application on Windows VM
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
           script: |
             powershell -ExecutionPolicy Bypass -Command "
             $ErrorActionPreference = 'Stop'
 
+            # -----------------------------
+            # Paths and Python setup
+            # -----------------------------
             $basePath = 'C:\Users\azureuser'
             $projectFolder = 'Windows-python-internal-service'
             $projectPath = Join-Path $basePath $projectFolder
             $envPath = Join-Path $projectPath '.env'
             $pythonPath = 'C:\Users\azureuser\AppData\Local\Programs\Python\Python311\python.exe'
 
-            # Clone repo if not exists
+            # -----------------------------
+            # Clone the repo if it doesn't exist
+            # -----------------------------
             if (!(Test-Path $projectPath)) {
                 git clone https://github.com/ponnapoornima/Windows-python-internal-service.git $projectPath
             } else {
@@ -41,9 +47,12 @@ jobs:
                 git reset --hard origin/developer
             }
 
+            # Move to project folder
             Set-Location $projectPath
 
-            # Create .env file
+            # -----------------------------
+            # Create .env file from secrets
+            # -----------------------------
             $envContent = @(
                 'MSSQL_HOST=${{ secrets.MSSQL_HOST }}'
                 'MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}'
@@ -61,12 +70,14 @@ jobs:
             )
             $envContent | Out-File -FilePath $envPath -Encoding utf8 -Force
 
+            # -----------------------------
             # Remove old venv if exists
+            # -----------------------------
             if (Test-Path 'venv') {
                 Remove-Item -Recurse -Force venv
             }
 
-            # Create new venv
+            # Create and activate new venv
             & $pythonPath -m venv venv
             .\venv\Scripts\activate
 
@@ -79,10 +90,10 @@ jobs:
                 New-Item -ItemType Directory -Path 'logs'
             }
 
-            # Stop any old Python processes
+            # Stop old Python processes
             Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 
-            # Start the app
+            # Start the application
             Start-Process python -ArgumentList 'main.py' `
               -RedirectStandardOutput 'output.log' `
               -RedirectStandardError 'error.log'
