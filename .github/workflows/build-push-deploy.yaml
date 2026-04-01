@@ -8,10 +8,10 @@ on:
 
 jobs:
   deploy-and-verify:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository (runner only, for PAT usage if needed)
+      # Step 1: Checkout repository (needed for PAT if cloning private repo)
       - name: Checkout Repository
         uses: actions/checkout@v3
 
@@ -31,7 +31,7 @@ jobs:
             $SERVICE_NAME = "PythonPollingService"
             $LOG_FILE = Join-Path $APP_DIR "logs\service.log"
 
-            # Step 2a: Clone or update repo directly on VM
+            # 1️⃣ Clone or update repo
             if (-Not (Test-Path $APP_DIR)) {
                 git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git $APP_DIR
             } else {
@@ -40,26 +40,26 @@ jobs:
                 git reset --hard origin/developer
             }
 
-            # Step 2b: Ensure Python installed
+            # 2️⃣ Ensure Python installed (requires choco)
             if (-Not (Get-Command python -ErrorAction SilentlyContinue)) {
                 choco install python -y
             }
 
-            # Step 2c: Setup virtual environment
+            # 3️⃣ Setup virtual environment
             if (-Not (Test-Path $VENV_PATH)) {
                 python -m venv $VENV_PATH
             }
 
-            # Step 2d: Install dependencies
+            # 4️⃣ Install dependencies
             & "$VENV_PATH\Scripts\pip.exe" install --upgrade pip
             & "$VENV_PATH\Scripts\pip.exe" install -r "$APP_DIR\requirements.txt"
 
-            # Step 2e: Create logs folder
+            # 5️⃣ Create logs folder
             if (-Not (Test-Path "$APP_DIR\logs")) {
                 New-Item -ItemType Directory -Path "$APP_DIR\logs" | Out-Null
             }
 
-            # Step 2f: Create .env file safely
+            # 6️⃣ Create .env file safely
             Set-Content -Path "$APP_DIR\.env" -Value ("MSSQL_HOST=${{ secrets.MSSQL_HOST }}")
             Add-Content -Path "$APP_DIR\.env" -Value ("MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}")
             Add-Content -Path "$APP_DIR\.env" -Value ("MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}")
@@ -74,14 +74,13 @@ jobs:
             Add-Content -Path "$APP_DIR\.env" -Value ("LOG_LEVEL=INFO")
             Add-Content -Path "$APP_DIR\.env" -Value ("LOG_FILE=$LOG_FILE")
 
-            # Step 2g: Create or update Windows service using NSSM
+            # 7️⃣ Install/update Windows service using NSSM
             $NSSM_PATH = "C:\nssm\nssm.exe"
             if (-Not (Test-Path $NSSM_PATH)) {
                 Write-Host "❌ NSSM not found at $NSSM_PATH. Please install NSSM on the VM."
                 exit 1
             }
 
-            # Install/update service
             & $NSSM_PATH install $SERVICE_NAME "$VENV_PATH\Scripts\python.exe" "$APP_DIR\main.py" | Out-Null
             & $NSSM_PATH set $SERVICE_NAME AppDirectory $APP_DIR | Out-Null
             & $NSSM_PATH set $SERVICE_NAME Start SERVICE_AUTO_START | Out-Null
