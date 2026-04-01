@@ -11,41 +11,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repo (needed for PAT usage, not for running on VM)
+      # Step 1: Checkout (optional, keeps workflow consistent)
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      # Step 2: Deploy on Windows VM
+      # Step 2: Deploy to Windows VM
       - name: Deploy Application on Windows VM
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
           script: |
             powershell -ExecutionPolicy Bypass -Command "
+            $ErrorActionPreference = 'Stop'
 
-            # -----------------------------
-            # 1️⃣ Set project path
-            # -----------------------------
-            $projectPath = 'C:\Users\azureuser\python-internal-service'
+            $basePath = 'C:\Users\azureuser'
+            $projectFolder = 'Windows-python-internal-service'
+            $projectPath = Join-Path $basePath $projectFolder
             $envPath = Join-Path $projectPath '.env'
             $pythonPath = 'C:\Users\azureuser\AppData\Local\Programs\Python\Python311\python.exe'
 
-            # -----------------------------
-            # 2️⃣ Clone repo if missing
-            # -----------------------------
-            if (-Not (Test-Path $projectPath)) {
-                git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git $projectPath
+            # Clone repo if not exists
+            if (!(Test-Path $projectPath)) {
+                git clone https://github.com/ponnapoornima/Windows-python-internal-service.git $projectPath
+            } else {
+                Set-Location $projectPath
+                git fetch --all
+                git reset --hard origin/developer
             }
 
-            # Step into project folder
             Set-Location $projectPath
 
-            # -----------------------------
-            # 3️⃣ Create .env file
-            # -----------------------------
+            # Create .env file
             $envContent = @(
                 'MSSQL_HOST=${{ secrets.MSSQL_HOST }}'
                 'MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}'
@@ -61,44 +59,33 @@ jobs:
                 'LOG_LEVEL=INFO'
                 'LOG_FILE=logs/service.log'
             )
-            $envContent | Set-Content $envPath -Force
+            $envContent | Out-File -FilePath $envPath -Encoding utf8 -Force
 
-            # -----------------------------
-            # 4️⃣ Setup Python venv
-            # -----------------------------
+            # Remove old venv if exists
             if (Test-Path 'venv') {
                 Remove-Item -Recurse -Force venv
             }
 
+            # Create new venv
             & $pythonPath -m venv venv
-
-            # Activate venv
             .\venv\Scripts\activate
 
-            # Upgrade pip
+            # Upgrade pip and install dependencies
             python -m pip install --upgrade pip
-
-            # Install dependencies
             pip install -r requirements.txt
 
-            # -----------------------------
-            # 5️⃣ Ensure logs folder exists
-            # -----------------------------
+            # Ensure logs folder exists
             if (!(Test-Path 'logs')) {
                 New-Item -ItemType Directory -Path 'logs'
             }
 
-            # -----------------------------
-            # 6️⃣ Stop old Python processes
-            # -----------------------------
+            # Stop any old Python processes
             Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 
-            # -----------------------------
-            # 7️⃣ Start application
-            # -----------------------------
+            # Start the app
             Start-Process python -ArgumentList 'main.py' `
-              -RedirectStandardOutput output.log `
-              -RedirectStandardError error.log
+              -RedirectStandardOutput 'output.log' `
+              -RedirectStandardError 'error.log'
 
             Write-Host '✅ Deployment completed successfully!'
             "
