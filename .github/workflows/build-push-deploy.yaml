@@ -1,4 +1,4 @@
-name: Deploy and Verify Python Internal Polling Service to Windows VM
+name: Deploy and Run Python Polling Service (Windows VM)
 
 on:
   push:
@@ -7,107 +7,52 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy-and-verify:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout code
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v3
 
-      # Deploy to Windows VM
-      - name: Deploy Python Service on Windows VM
-        uses: appleboy/ssh-action@v0.1.6
+      - name: Deploy to Windows VM
+        uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
           script: |
-            powershell -Command "
-            Write-Output 'Deploying to Windows VM...'
+            cd C:\Users\azureuser\python-internal-service
 
-            $APP_DIR = 'C:\Users\${{ secrets.VM_USER }}\python-internal-service'
+            echo Creating .env file...
 
-            if (!(Test-Path $APP_DIR)) {
-              New-Item -ItemType Directory -Path $APP_DIR
-            }
+            echo MSSQL_HOST=${{ secrets.MSSQL_HOST }} > .env
+            echo MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }} >> .env
+            echo MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }} >> .env
+            echo MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }} >> .env
+            echo EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }} >> .env
+            echo APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }} >> .env
 
-            Set-Location $APP_DIR
+            echo POLL_INTERVAL_SECONDS=5 >> .env
+            echo MAX_CONCURRENT_JOBS=3 >> .env
+            echo REQUEST_TIMEOUT_SECONDS=120 >> .env
+            echo MAX_RETRIES=3 >> .env
+            echo RETRY_DELAY_SECONDS=5.0 >> .env
 
-            if (!(Test-Path '.git')) {
-              git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git .
-            } else {
-              git fetch --all
-              git reset --hard origin/developer
-            }
+            echo LOG_LEVEL=INFO >> .env
+            echo LOG_FILE=logs/service.log >> .env
 
-            if (!(Test-Path 'venv')) {
-              python -m venv venv
-            }
+            echo .env file created:
+            type .env
 
-            .\venv\Scripts\Activate.ps1
+            echo Activating virtual environment...
+            call venv\Scripts\activate
 
-            pip install --upgrade pip
+            echo Installing dependencies...
             pip install -r requirements.txt
 
-            if (!(Test-Path 'logs')) {
-              New-Item -ItemType Directory -Path logs
-            }
+            echo Stopping existing Python process (if any)...
+            taskkill /IM python.exe /F || echo No existing process
+            echo Starting application...
+            start /B python main.py
 
-            Write-Output 'Creating .env file...'
-
-            $envContent = @(
-              'MSSQL_HOST=${{ secrets.MSSQL_HOST }}',
-              'MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}',
-              'MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}',
-              'MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}',
-              'EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}',
-              'POLL_INTERVAL_SECONDS=5',
-              'MAX_CONCURRENT_JOBS=3',
-              'REQUEST_TIMEOUT_SECONDS=120',
-              'MAX_RETRIES=3',
-              'RETRY_DELAY_SECONDS=5.0',
-              'APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}',
-              'LOG_LEVEL=INFO',
-              'LOG_FILE=logs/service.log'
-            )
-
-            $envContent | Out-File -Encoding ASCII .env
-
-            Write-Output 'Stopping existing Python process...'
-            Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
-
-            Write-Output 'Starting application...'
-            Start-Process -NoNewWindow -FilePath 'python' -ArgumentList 'main.py'
-            "
-
-      # Verify deployment
-      - name: Verify Service
-        uses: appleboy/ssh-action@v0.1.6
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
-          script: |
-            powershell -Command "
-            Write-Output 'Checking Python process...'
-
-            $process = Get-Process python -ErrorAction SilentlyContinue
-
-            if ($process) {
-              Write-Output 'Python service is RUNNING'
-            } else {
-              Write-Output 'Python service is NOT running'
-              exit 1
-            }
-
-            $logPath = 'C:\Users\${{ secrets.VM_USER }}\python-internal-service\logs\service.log'
-
-            if (Test-Path $logPath) {
-              Get-Content $logPath -Tail 30
-            } else {
-              Write-Output 'No log file found'
-            }
-            "
+            echo Deployment completed successfully!
