@@ -11,9 +11,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout code
       - name: Checkout Repository
         uses: actions/checkout@v3
 
+      # Deploy to Windows VM
       - name: Deploy Python Service on Windows VM
         uses: appleboy/ssh-action@v0.1.6
         with:
@@ -22,9 +24,10 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            echo "📦 Deploying to Windows VM..."
+            powershell -Command "
+            Write-Output 'Deploying to Windows VM...'
 
-            $APP_DIR = "C:\Users\${{ secrets.VM_USER }}\python-internal-service"
+            $APP_DIR = 'C:\Users\${{ secrets.VM_USER }}\python-internal-service'
 
             if (!(Test-Path $APP_DIR)) {
               New-Item -ItemType Directory -Path $APP_DIR
@@ -32,14 +35,14 @@ jobs:
 
             Set-Location $APP_DIR
 
-            if (!(Test-Path ".git")) {
+            if (!(Test-Path '.git')) {
               git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git .
             } else {
               git fetch --all
               git reset --hard origin/developer
             }
 
-            if (!(Test-Path "venv")) {
+            if (!(Test-Path 'venv')) {
               python -m venv venv
             }
 
@@ -48,32 +51,38 @@ jobs:
             pip install --upgrade pip
             pip install -r requirements.txt
 
-            if (!(Test-Path "logs")) {
+            if (!(Test-Path 'logs')) {
               New-Item -ItemType Directory -Path logs
             }
 
-            echo "🔐 Creating .env file..."
+            Write-Output 'Creating .env file...'
 
-            @"
-            MSSQL_HOST=${{ secrets.MSSQL_HOST }}
-            MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}
-            MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}
-            MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}
-            EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}
-            POLL_INTERVAL_SECONDS=5
-            MAX_CONCURRENT_JOBS=3
-            REQUEST_TIMEOUT_SECONDS=120
-            MAX_RETRIES=3
-            RETRY_DELAY_SECONDS=5.0
-            APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}
-            LOG_LEVEL=INFO
-            LOG_FILE=logs/service.log
-            "@ | Out-File -Encoding ASCII .env
+            $envContent = @(
+              'MSSQL_HOST=${{ secrets.MSSQL_HOST }}',
+              'MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}',
+              'MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}',
+              'MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}',
+              'EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}',
+              'POLL_INTERVAL_SECONDS=5',
+              'MAX_CONCURRENT_JOBS=3',
+              'REQUEST_TIMEOUT_SECONDS=120',
+              'MAX_RETRIES=3',
+              'RETRY_DELAY_SECONDS=5.0',
+              'APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}',
+              'LOG_LEVEL=INFO',
+              'LOG_FILE=logs/service.log'
+            )
 
+            $envContent | Out-File -Encoding ASCII .env
+
+            Write-Output 'Stopping existing Python process...'
             Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 
-            Start-Process -NoNewWindow -FilePath "python" -ArgumentList "main.py"
+            Write-Output 'Starting application...'
+            Start-Process -NoNewWindow -FilePath 'python' -ArgumentList 'main.py'
+            "
 
+      # Verify deployment
       - name: Verify Service
         uses: appleboy/ssh-action@v0.1.6
         with:
@@ -82,17 +91,23 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
+            powershell -Command "
+            Write-Output 'Checking Python process...'
+
             $process = Get-Process python -ErrorAction SilentlyContinue
 
             if ($process) {
-              echo "✅ Python service is RUNNING"
+              Write-Output 'Python service is RUNNING'
             } else {
-              echo "❌ Python service is NOT running"
+              Write-Output 'Python service is NOT running'
               exit 1
             }
 
-            if (Test-Path "C:\Users\${{ secrets.VM_USER }}\python-internal-service\logs\service.log") {
-              Get-Content "C:\Users\${{ secrets.VM_USER }}\python-internal-service\logs\service.log" -Tail 30
+            $logPath = 'C:\Users\${{ secrets.VM_USER }}\python-internal-service\logs\service.log'
+
+            if (Test-Path $logPath) {
+              Get-Content $logPath -Tail 30
             } else {
-              echo "No log file found"
+              Write-Output 'No log file found'
             }
+            "
