@@ -1,4 +1,4 @@
-name: Deploy and Verify Python Internal Polling Service to VM
+name: Deploy and Verify Python Internal Polling Service to Windows VM
 
 on:
   push:
@@ -11,12 +11,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repo
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      # Step 2: Deploy to VM
-      - name: Deploy Python Service on VM
+      - name: Deploy Python Service on Windows VM
         uses: appleboy/ssh-action@v0.1.6
         with:
           host: ${{ secrets.VM_HOST }}
@@ -24,39 +22,39 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            set -e
+            echo "📦 Deploying to Windows VM..."
 
-            APP_DIR="/home/${{ secrets.VM_USER }}/python-internal-service"
-            SERVICE_FILE="/etc/systemd/system/python-polling.service"
+            $APP_DIR = "C:\Users\${{ secrets.VM_USER }}\python-internal-service"
 
-            echo "📦 Cloning or updating repo..."
-            cd /home/${{ secrets.VM_USER }}
+            if (!(Test-Path $APP_DIR)) {
+              New-Item -ItemType Directory -Path $APP_DIR
+            }
 
-            if [ ! -d "python-internal-service" ]; then
-              git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git
-            fi
+            Set-Location $APP_DIR
 
-            cd python-internal-service
-            git fetch --all
-            git reset --hard origin/developer
+            if (!(Test-Path ".git")) {
+              git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git .
+            } else {
+              git fetch --all
+              git reset --hard origin/developer
+            }
 
-            echo "⚙️ Installing dependencies..."
-            sudo apt update
-            sudo apt install -y python3 python3-venv python3-pip git curl
+            if (!(Test-Path "venv")) {
+              python -m venv venv
+            }
 
-            echo "🧱 Setting up virtual environment..."
-            if [ ! -d "venv" ]; then
-              python3 -m venv venv
-            fi
+            .\venv\Scripts\Activate.ps1
 
-            source venv/bin/activate
             pip install --upgrade pip
             pip install -r requirements.txt
 
-            mkdir -p logs
+            if (!(Test-Path "logs")) {
+              New-Item -ItemType Directory -Path logs
+            }
 
             echo "🔐 Creating .env file..."
-            cat <<EOF > .env
+
+            @"
             MSSQL_HOST=${{ secrets.MSSQL_HOST }}
             MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}
             MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}
@@ -70,36 +68,12 @@ jobs:
             APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}
             LOG_LEVEL=INFO
             LOG_FILE=logs/service.log
-            EOF
+            "@ | Out-File -Encoding ASCII .env
 
-            chmod 600 .env
+            Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 
-            echo "🛠 Creating systemd service..."
-            sudo bash -c "cat > $SERVICE_FILE" <<EOL
-            [Unit]
-            Description=Python Internal Polling Service
-            After=network.target
+            Start-Process -NoNewWindow -FilePath "python" -ArgumentList "main.py"
 
-            [Service]
-            User=${{ secrets.VM_USER }}
-            WorkingDirectory=$APP_DIR
-            ExecStart=$APP_DIR/venv/bin/python main.py
-            Restart=always
-            RestartSec=5
-            Environment=PYTHONUNBUFFERED=1
-
-            [Install]
-            WantedBy=multi-user.target
-            EOL
-
-            echo "🔄 Reloading systemd..."
-            sudo systemctl daemon-reload
-            sudo systemctl enable python-polling.service
-
-            echo "🚀 Restarting service..."
-            sudo systemctl restart python-polling.service
-
-      # Step 3: Verify deployment
       - name: Verify Service
         uses: appleboy/ssh-action@v0.1.6
         with:
@@ -108,20 +82,17 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            SERVICE_NAME="python-polling.service"
+            $process = Get-Process python -ErrorAction SilentlyContinue
 
-            echo "🔍 Checking service status..."
-
-            if systemctl is-active --quiet $SERVICE_NAME; then
-              echo "✅ Service is RUNNING"
-            else
-              echo "❌ Service is NOT running"
-              sudo journalctl -u $SERVICE_NAME -n 50 --no-pager
+            if ($process) {
+              echo "✅ Python service is RUNNING"
+            } else {
+              echo "❌ Python service is NOT running"
               exit 1
-            fi
+            }
 
-            echo ""
-            echo "📄 Last 30 logs:"
-            sudo journalctl -u $SERVICE_NAME -n 30 --no-pager
-
-            echo "✅ Deployment Verified Successfully"
+            if (Test-Path "C:\Users\${{ secrets.VM_USER }}\python-internal-service\logs\service.log") {
+              Get-Content "C:\Users\${{ secrets.VM_USER }}\python-internal-service\logs\service.log" -Tail 30
+            } else {
+              echo "No log file found"
+            }
