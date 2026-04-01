@@ -20,8 +20,8 @@ jobs:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "deploy.ps1"
-          target: "C:/Users/azureuser/"
+          source: "."
+          target: "C:/Users/azureuser/python-internal-service"
 
       - name: Deploy Application on Windows VM
         uses: appleboy/ssh-action@v0.1.10
