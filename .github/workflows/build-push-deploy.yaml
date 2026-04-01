@@ -1,7 +1,4 @@
-name: Deploy Python Internal Polling Service to Windows VM
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+name: Deploy Python Polling Service (Windows VM)
 
 on:
   push:
@@ -10,72 +7,88 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy-and-run:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository
+      # Step 1: Checkout workflow repo (needed for PAT)
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      # Step 2: Deploy to Windows VM
-      - name: Deploy Python Service on Windows VM
-        uses: appleboy/ssh-action@v0.1.6
+      # Step 2: Deploy on Windows VM
+      - name: Deploy Application on Windows VM
+        uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            $ErrorActionPreference = "Stop"
+            powershell -ExecutionPolicy Bypass -Command "
+            $ErrorActionPreference = 'Stop'
 
-            $APP_DIR = "C:\Users\${{ secrets.VM_USER }}\python-internal-service"
-            $VENV_PATH = Join-Path $APP_DIR "venv"
-            $LOG_FILE = Join-Path $APP_DIR "logs\service.log"
+            $projectPath = 'C:\Users\${{ secrets.VM_USER }}\python-internal-service'
+            $envPath = Join-Path $projectPath '.env'
+            $pythonPath = 'C:\Users\${{ secrets.VM_USER }}\AppData\Local\Programs\Python\Python311\python.exe'
 
-            # 1️⃣ Clone or update repo
-            if (-Not (Test-Path $APP_DIR)) {
-                git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git $APP_DIR
+            # -----------------------------
+            # Clone repo if missing, else update
+            # -----------------------------
+            if (-Not (Test-Path (Join-Path $projectPath '.git'))) {
+              git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git $projectPath
             } else {
-                Set-Location $APP_DIR
-                git fetch --all
-                git reset --hard origin/developer
+              Set-Location $projectPath
+              git fetch --all
+              git reset --hard origin/developer
             }
 
-            Set-Location $APP_DIR
+            # Step into project folder
+            Set-Location $projectPath
 
-            # 2️⃣ Ensure logs folder exists
-            if (-Not (Test-Path "$APP_DIR\logs")) {
-                New-Item -ItemType Directory -Path "$APP_DIR\logs" | Out-Null
-            }
-
-            # 3️⃣ Create virtual environment if missing
-            if (-Not (Test-Path $VENV_PATH)) {
-                python -m venv $VENV_PATH
-            }
-
-            # 4️⃣ Install dependencies
-            & "$VENV_PATH\Scripts\pip.exe" install --upgrade pip
-            & "$VENV_PATH\Scripts\pip.exe" install -r "$APP_DIR\requirements.txt"
-
-            # 5️⃣ Create .env file
+            # -----------------------------
+            # Create .env file
+            # -----------------------------
             $envContent = @(
-              "MSSQL_HOST=${{ secrets.MSSQL_HOST }}"
-              "MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}"
-              "MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}"
-              "MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}"
-              "EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}"
-              "POLL_INTERVAL_SECONDS=5"
-              "MAX_CONCURRENT_JOBS=3"
-              "REQUEST_TIMEOUT_SECONDS=120"
-              "MAX_RETRIES=3"
-              "RETRY_DELAY_SECONDS=5.0"
-              "APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}"
-              "LOG_LEVEL=INFO"
-              "LOG_FILE=$LOG_FILE"
+              'MSSQL_HOST=${{ secrets.MSSQL_HOST }}'
+              'MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}'
+              'MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}'
+              'MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}'
+              'EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}'
+              'APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}'
+              'POLL_INTERVAL_SECONDS=5'
+              'MAX_CONCURRENT_JOBS=3'
+              'REQUEST_TIMEOUT_SECONDS=120'
+              'MAX_RETRIES=3'
+              'RETRY_DELAY_SECONDS=5.0'
+              'LOG_LEVEL=INFO'
+              'LOG_FILE=logs/service.log'
             )
-            $envContent | Set-Content "$APP_DIR\.env"
+            $envContent | Set-Content $envPath -Force
+            Write-Host '✅ .env file created'
 
-            # 6️⃣ Run the Python app in background
-            Start-Process -FilePath "$VENV_PATH\Scripts\python.exe" -ArgumentList "$APP_DIR\main.py" -WindowStyle Hidden
-            Write-Host "✅ Python Internal Polling Service started in background."
+            # -----------------------------
+            # Setup Python virtual environment
+            # -----------------------------
+            if (Test-Path 'venv') { Remove-Item -Recurse -Force venv }
+            & $pythonPath -m venv venv
+            .\venv\Scripts\activate
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+
+            # Ensure logs folder exists
+            if (-Not (Test-Path 'logs')) { New-Item -ItemType Directory -Path 'logs' }
+
+            # -----------------------------
+            # Stop old process
+            # -----------------------------
+            Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
+
+            # -----------------------------
+            # Start app in background
+            # -----------------------------
+            Start-Process python -ArgumentList 'main.py' `
+              -RedirectStandardOutput output.log `
+              -RedirectStandardError error.log
+
+            Write-Host '✅ Deployment completed successfully!'
+            "
