@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout workflow repo (needed for PAT)
+      # Step 1: Checkout repo (needed for PAT usage, not for running on VM)
       - name: Checkout Repository
         uses: actions/checkout@v3
 
@@ -25,66 +25,76 @@ jobs:
           port: 22
           script: |
             powershell -ExecutionPolicy Bypass -Command "
-            $ErrorActionPreference = 'Stop'
 
-            $projectPath = 'C:\Users\${{ secrets.VM_USER }}\python-internal-service'
+            # -----------------------------
+            # 1️⃣ Set project path
+            # -----------------------------
+            $projectPath = 'C:\Users\azureuser\python-internal-service'
             $envPath = Join-Path $projectPath '.env'
-            $pythonPath = 'C:\Users\${{ secrets.VM_USER }}\AppData\Local\Programs\Python\Python311\python.exe'
+            $pythonPath = 'C:\Users\azureuser\AppData\Local\Programs\Python\Python311\python.exe'
 
             # -----------------------------
-            # Clone repo if missing, else update
+            # 2️⃣ Clone repo if missing
             # -----------------------------
-            if (-Not (Test-Path (Join-Path $projectPath '.git'))) {
-              git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git $projectPath
-            } else {
-              Set-Location $projectPath
-              git fetch --all
-              git reset --hard origin/developer
+            if (-Not (Test-Path $projectPath)) {
+                git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git $projectPath
             }
 
             # Step into project folder
             Set-Location $projectPath
 
             # -----------------------------
-            # Create .env file
+            # 3️⃣ Create .env file
             # -----------------------------
             $envContent = @(
-              'MSSQL_HOST=${{ secrets.MSSQL_HOST }}'
-              'MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}'
-              'MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}'
-              'MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}'
-              'EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}'
-              'APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}'
-              'POLL_INTERVAL_SECONDS=5'
-              'MAX_CONCURRENT_JOBS=3'
-              'REQUEST_TIMEOUT_SECONDS=120'
-              'MAX_RETRIES=3'
-              'RETRY_DELAY_SECONDS=5.0'
-              'LOG_LEVEL=INFO'
-              'LOG_FILE=logs/service.log'
+                'MSSQL_HOST=${{ secrets.MSSQL_HOST }}'
+                'MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}'
+                'MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}'
+                'MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}'
+                'EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}'
+                'APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}'
+                'POLL_INTERVAL_SECONDS=5'
+                'MAX_CONCURRENT_JOBS=3'
+                'REQUEST_TIMEOUT_SECONDS=120'
+                'MAX_RETRIES=3'
+                'RETRY_DELAY_SECONDS=5.0'
+                'LOG_LEVEL=INFO'
+                'LOG_FILE=logs/service.log'
             )
             $envContent | Set-Content $envPath -Force
-            Write-Host '✅ .env file created'
 
             # -----------------------------
-            # Setup Python virtual environment
+            # 4️⃣ Setup Python venv
             # -----------------------------
-            if (Test-Path 'venv') { Remove-Item -Recurse -Force venv }
+            if (Test-Path 'venv') {
+                Remove-Item -Recurse -Force venv
+            }
+
             & $pythonPath -m venv venv
+
+            # Activate venv
             .\venv\Scripts\activate
+
+            # Upgrade pip
             python -m pip install --upgrade pip
+
+            # Install dependencies
             pip install -r requirements.txt
 
-            # Ensure logs folder exists
-            if (-Not (Test-Path 'logs')) { New-Item -ItemType Directory -Path 'logs' }
+            # -----------------------------
+            # 5️⃣ Ensure logs folder exists
+            # -----------------------------
+            if (!(Test-Path 'logs')) {
+                New-Item -ItemType Directory -Path 'logs'
+            }
 
             # -----------------------------
-            # Stop old process
+            # 6️⃣ Stop old Python processes
             # -----------------------------
             Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 
             # -----------------------------
-            # Start app in background
+            # 7️⃣ Start application
             # -----------------------------
             Start-Process python -ArgumentList 'main.py' `
               -RedirectStandardOutput output.log `
