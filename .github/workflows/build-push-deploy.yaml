@@ -1,4 +1,4 @@
-name: Deploy Python Internal Polling Service to Windows VM
+name: Deploy Python Polling Service (Windows VM)
 
 on:
   push:
@@ -7,117 +7,99 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy-and-verify:
-    runs-on: windows-latest
+  deploy:
+    runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository
+      # Step 1: Checkout code
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      # Step 2: Deploy to Windows VM
-      - name: Deploy Python Service on Windows VM
-        uses: appleboy/ssh-action@v0.1.6
+      # Step 2: Copy full project to VM
+      - name: Copy project files to VM
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
+          source: "."
+          target: "C:/Users/azureuser/python-internal-service"
+
+      # Step 3: Deploy on VM
+      - name: Deploy Application on Windows VM
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+
           script: |
-            $ErrorActionPreference = "Stop"
-            
-            # Paths
-            $APP_DIR = "C:\Users\${{ secrets.VM_USER }}\python-internal-service"
-            $VENV_PATH = Join-Path $APP_DIR "venv"
-            $SERVICE_NAME = "PythonPollingService"
-            $LOG_FILE = Join-Path $APP_DIR "logs\service.log"
-            
-            # Clone or update repo
-            if (-Not (Test-Path $APP_DIR)) {
-                git clone https://${{ secrets.PAT }}@github.com/ponnapoornima/python-internal-service.git $APP_DIR
+            powershell -ExecutionPolicy Bypass -Command "
+
+            Write-Host 'Starting deployment...'
+
+            \$projectPath = 'C:\Users\azureuser\python-internal-service'
+            \$envPath = \"\$projectPath\.env\"
+
+            Set-Location \$projectPath
+
+            # -----------------------------
+            # Create .env file (FIXED)
+            # -----------------------------
+            New-Item -Path \$envPath -ItemType File -Force
+
+            Add-Content \$envPath 'MSSQL_HOST=${{ secrets.MSSQL_HOST }}'
+            Add-Content \$envPath 'MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}'
+            Add-Content \$envPath 'MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}'
+            Add-Content \$envPath 'MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}'
+            Add-Content \$envPath 'EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}'
+            Add-Content \$envPath 'APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}'
+
+            Add-Content \$envPath 'POLL_INTERVAL_SECONDS=5'
+            Add-Content \$envPath 'MAX_CONCURRENT_JOBS=3'
+            Add-Content \$envPath 'REQUEST_TIMEOUT_SECONDS=120'
+            Add-Content \$envPath 'MAX_RETRIES=3'
+            Add-Content \$envPath 'RETRY_DELAY_SECONDS=5.0'
+            Add-Content \$envPath 'LOG_LEVEL=INFO'
+            Add-Content \$envPath 'LOG_FILE=logs/service.log'
+
+            Write-Host 'ENV FILE CREATED:'
+            Get-Content \$envPath
+
+            # -----------------------------
+            # Use Python 3.11 (IMPORTANT FIX)
+            # -----------------------------
+            \$pythonPath = 'C:\Users\azureuser\AppData\Local\Programs\Python\Python311\python.exe'
+
+            # Remove old venv
+            if (Test-Path 'venv') {
+              Remove-Item -Recurse -Force venv
             }
-            Set-Location $APP_DIR
-            git fetch --all
-            git reset --hard origin/developer
-            
-            # Ensure Python is installed
-            if (-Not (Get-Command python -ErrorAction SilentlyContinue)) {
-                choco install python -y
-            }
-            
-            # Setup virtual environment
-            if (-Not (Test-Path $VENV_PATH)) {
-                python -m venv $VENV_PATH
-            }
-            
+
+            # Create new venv
+            & \$pythonPath -m venv venv
+
+            # Activate venv
+            .\venv\Scripts\activate
+
+            # Upgrade pip
+            python -m pip install --upgrade pip
+
             # Install dependencies
-            & "$VENV_PATH\Scripts\pip.exe" install --upgrade pip
-            & "$VENV_PATH\Scripts\pip.exe" install -r requirements.txt
-            
-            # Create logs folder
-            if (-Not (Test-Path "$APP_DIR\logs")) {
-                New-Item -ItemType Directory -Path "$APP_DIR\logs" | Out-Null
-            }
-            
-            # Create .env file (production safe)
-            Set-Content -Path "$APP_DIR\.env" -Value ("MSSQL_HOST=${{ secrets.MSSQL_HOST }}")
-            Add-Content -Path "$APP_DIR\.env" -Value ("MSSQL_DATABASE=${{ secrets.MSSQL_DATABASE }}")
-            Add-Content -Path "$APP_DIR\.env" -Value ("MSSQL_USERNAME=${{ secrets.MSSQL_USERNAME }}")
-            Add-Content -Path "$APP_DIR\.env" -Value ("MSSQL_PASSWORD=${{ secrets.MSSQL_PASSWORD }}")
-            Add-Content -Path "$APP_DIR\.env" -Value ("EXTERNAL_API_BASE_URL=${{ secrets.EXTERNAL_API_BASE_URL }}")
-            Add-Content -Path "$APP_DIR\.env" -Value ("POLL_INTERVAL_SECONDS=5")
-            Add-Content -Path "$APP_DIR\.env" -Value ("MAX_CONCURRENT_JOBS=3")
-            Add-Content -Path "$APP_DIR\.env" -Value ("REQUEST_TIMEOUT_SECONDS=120")
-            Add-Content -Path "$APP_DIR\.env" -Value ("MAX_RETRIES=3")
-            Add-Content -Path "$APP_DIR\.env" -Value ("RETRY_DELAY_SECONDS=5.0")
-            Add-Content -Path "$APP_DIR\.env" -Value ("APIM_SUBSCRIPTION_KEY=${{ secrets.APIM_SUBSCRIPTION_KEY }}")
-            Add-Content -Path "$APP_DIR\.env" -Value ("LOG_LEVEL=INFO")
-            Add-Content -Path "$APP_DIR\.env" -Value ("LOG_FILE=$LOG_FILE")
-            
-            # Create or update Windows service via NSSM
-            $NSSM_PATH = "C:\nssm\nssm.exe"
-            if (-Not (Test-Path $NSSM_PATH)) {
-                Write-Host "❌ NSSM not found at $NSSM_PATH. Install NSSM before running workflow."
-                exit 1
+            pip install -r requirements.txt
+
+            # Ensure logs folder exists
+            if (!(Test-Path 'logs')) {
+              New-Item -ItemType Directory -Path 'logs'
             }
 
-            # Install or update service
-            & $NSSM_PATH install $SERVICE_NAME "$VENV_PATH\Scripts\python.exe" "$APP_DIR\main.py" | Out-Null
-            & $NSSM_PATH set $SERVICE_NAME AppDirectory $APP_DIR | Out-Null
-            & $NSSM_PATH set $SERVICE_NAME Start SERVICE_AUTO_START | Out-Null
-            & $NSSM_PATH restart $SERVICE_NAME | Out-Null
+            # Stop old process
+            Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 
-      # Step 3: Verify service
-      - name: Verify Service
-        uses: appleboy/ssh-action@v0.1.6
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
-          script: |
-            $SERVICE_NAME = "PythonPollingService"
-            $APP_DIR = "C:\Users\${{ secrets.VM_USER }}\python-internal-service"
-            $LOG_FILE = Join-Path $APP_DIR "logs\service.log"
+            # Start app (with logging)
+            Start-Process python -ArgumentList 'main.py' `
+              -RedirectStandardOutput output.log `
+              -RedirectStandardError error.log
 
-            $svc = Get-Service -Name $SERVICE_NAME -ErrorAction SilentlyContinue
-            if ($null -eq $svc) {
-                Write-Host "❌ Service $SERVICE_NAME not found"
-                exit 1
-            }
-
-            if ($svc.Status -eq "Running") {
-                Write-Host "✅ Service is RUNNING"
-            } else {
-                Write-Host "❌ Service is NOT running, attempting start..."
-                Start-Service $SERVICE_NAME
-            }
-
-            Write-Host "📄 Last 30 logs:"
-            if (Test-Path $LOG_FILE) {
-                Get-Content $LOG_FILE -Tail 30
-            } else {
-                Write-Host "No logs found."
-            }
-
-            Write-Host "✅ Deployment Verified Successfully"
+            Write-Host 'Deployment completed successfully!'
+            "
